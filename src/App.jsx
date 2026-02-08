@@ -17,7 +17,7 @@ import useAudio from './hooks/useAudio'
 import { extractTextFromURL, extractTextFromFile, textToWords } from './utils/extractText'
 import { cleanText } from './utils/cleanText'
 import { logError } from './utils/errorLogger'
-import { createSession, completeSession, syncOfflineQueue } from './lib/sessions'
+import { createSession, completeSession, syncOfflineQueue, getSession } from './lib/sessions'
 import { saveItem, detectSourceType } from './lib/savedItems'
 
 function App() {
@@ -73,14 +73,22 @@ function App() {
 
     try {
       if (resumeSession) {
-        const resumeWords = textToWords(resumeSession.content_text)
+        // Fetch full session data (including content_text) if not already present
+        let fullSession = resumeSession
+        if (!fullSession.content_text) {
+          fullSession = await getSession(resumeSession.id)
+          if (!fullSession || !fullSession.content_text) {
+            throw new Error('Could not load session content. The session may have been deleted.')
+          }
+        }
+        const resumeWords = textToWords(fullSession.content_text)
         setWords(resumeWords)
         setChapters(null)
-        setContentText(resumeSession.content_text)
-        setSourceType(resumeSession.source_type)
-        setSourceUrl(resumeSession.source_url)
-        setFileInfo(resumeSession.title)
-        setCurrentSessionId(resumeSession.id)
+        setContentText(fullSession.content_text)
+        setSourceType(fullSession.source_type)
+        setSourceUrl(fullSession.source_url)
+        setFileInfo(fullSession.title)
+        setCurrentSessionId(fullSession.id)
         setResumePosition(resumeSession.current_position || 0)
         setScreen('music')
         setLoading(false)
