@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Analytics } from '@vercel/analytics/react'
 import LandingPage from './components/LandingPage'
 import MusicPicker from './components/MusicPicker'
 import RSVPReader from './components/RSVPReader'
@@ -181,6 +182,7 @@ function App() {
           onBack={handleBack}
         />
       )}
+      <Analytics />
     </>
   )
 }
