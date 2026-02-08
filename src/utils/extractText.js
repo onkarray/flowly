@@ -2,6 +2,9 @@ import { Readability } from '@mozilla/readability'
 import DOMPurify from 'dompurify'
 
 const CORS_PROXIES = [
+  // Our own Vercel serverless proxy (most reliable)
+  (url) => `/api/fetch?url=${encodeURIComponent(url)}`,
+  // Public fallbacks
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
 ]
