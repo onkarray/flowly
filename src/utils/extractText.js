@@ -1,5 +1,6 @@
 import { Readability } from '@mozilla/readability'
 import DOMPurify from 'dompurify'
+import { cleanText } from './cleanText'
 
 const CORS_PROXIES = [
   // Our own Vercel serverless proxy (most reliable)
@@ -14,7 +15,8 @@ const CORS_PROXIES = [
  */
 export async function extractTextFromURL(url) {
   const html = await fetchHTML(url)
-  const text = parseHTMLToText(html, url)
+  const rawText = parseHTMLToText(html, url)
+  const text = cleanText(rawText)
 
   if (!text || text.length < 50) {
     throw new Error('Not enough readable text found on this page. Try a different article or paste the text into a .txt file.')
@@ -23,24 +25,31 @@ export async function extractTextFromURL(url) {
   return { text, pageCount: null, chapters: null }
 }
 
+function looksLikeHTML(text) {
+  // Must contain an actual HTML tag to count as valid HTML
+  return text.length > 500 && (/<html/i.test(text) || /<body/i.test(text) || /<div/i.test(text) || /<article/i.test(text) || /<p[\s>]/i.test(text))
+}
+
 async function fetchHTML(url) {
+  // 1. Try direct fetch (works for same-origin or CORS-enabled sites)
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
     if (res.ok) {
       const html = await res.text()
-      if (html.length > 200) return html
+      if (looksLikeHTML(html)) return html
     }
   } catch {
-    // CORS or network error
+    // CORS or network error — expected, try proxies
   }
 
+  // 2. Try each proxy in order
   for (const makeProxyUrl of CORS_PROXIES) {
     try {
       const proxyUrl = makeProxyUrl(url)
-      const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) })
+      const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(15000) })
       if (res.ok) {
         const html = await res.text()
-        if (html.length > 200) return html
+        if (looksLikeHTML(html)) return html
       }
     } catch {
       continue
@@ -91,11 +100,11 @@ export async function extractTextFromFile(file, onProgress) {
   const name = file.name.toLowerCase()
 
   if (name.endsWith('.txt')) {
-    const text = await file.text()
-    if (!text || text.trim().length < 20) {
+    const rawText = await file.text()
+    if (!rawText || rawText.trim().length < 20) {
       throw new Error('This file appears to be empty or too short. Make sure the file contains readable text.')
     }
-    const cleaned = text.trim()
+    const cleaned = cleanText(rawText.trim())
     const chapters = detectChaptersFromText(cleaned)
     return { text: cleaned, pageCount: null, chapters }
   }
@@ -171,6 +180,7 @@ async function extractPDFText(file, onProgress) {
 
   let text = pages.join('\n\n')
   text = cleanPDFText(text)
+  text = cleanText(text)
 
   if (text.length < 30) {
     throw new Error('No readable text found in this PDF. It may be a scanned document or image-only file. Try using OCR software first.')

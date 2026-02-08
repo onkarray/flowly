@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useAuth } from '../contexts/AuthContext'
+import { updateSessionProgress } from '../lib/sessions'
+import { createNote } from '../lib/notes'
 
 const ORP_THEMES = {
   focus:  { name: 'Focus',  color: '#FF4444', label: 'Red' },
@@ -27,9 +30,11 @@ const RAMP_START_WPM = 200
 const RAMP_END_WPM = 700
 const RAMP_DURATION_MS = 30000
 const RAMP_TICK_MS = 500
+const AUTOSAVE_INTERVAL_MS = 10000
 
-export default function RSVPReader({ words, chapters, onChapterChange, sourceInfo, onBack, onDone }) {
-  const [currentIndex, setCurrentIndex] = useState(0)
+export default function RSVPReader({ words, chapters, onChapterChange, sourceInfo, onBack, onDone, sessionId, resumePosition = 0 }) {
+  const { user, isAuthenticated } = useAuth()
+  const [currentIndex, setCurrentIndex] = useState(resumePosition)
   const [isPlaying, setIsPlaying] = useState(false)
   const [wpm, setWpm] = useState(RAMP_START_WPM)
   const [theme, setTheme] = useState('focus')
@@ -39,6 +44,12 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
   const [autoRamp, setAutoRamp] = useState(true)
   const [currentChapter, setCurrentChapter] = useState(0)
 
+  // Mid-session notes
+  const [showNoteInput, setShowNoteInput] = useState(false)
+  const [noteText, setNoteText] = useState('')
+  const [noteSaved, setNoteSaved] = useState(false)
+  const noteInputRef = useRef(null)
+
   // Session stats tracking
   const sessionStartRef = useRef(null)
   const totalPlayTimeRef = useRef(0)
@@ -46,14 +57,17 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
   const wordsReadRef = useRef(0)
 
   const timerRef = useRef(null)
-  const indexRef = useRef(0)
+  const indexRef = useRef(resumePosition)
   const wpmRef = useRef(RAMP_START_WPM)
   const isPlayingRef = useRef(false)
   const rampRef = useRef(null)
   const rampElapsedRef = useRef(0)
   const autoRampRef = useRef(true)
+  const autoSaveRef = useRef(null)
+  const sessionIdRef = useRef(sessionId)
 
   autoRampRef.current = autoRamp
+  sessionIdRef.current = sessionId
 
   // Keep refs in sync
   indexRef.current = currentIndex
@@ -94,6 +108,46 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
       avgWpm,
     }
   }, [])
+
+  // ─── Auto-save progress every 10s ─────────────────
+  const saveProgress = useCallback(async () => {
+    if (!isAuthenticated || !sessionIdRef.current || String(sessionIdRef.current).startsWith('offline-')) return
+    const stats = getSessionStats()
+    try {
+      await updateSessionProgress(sessionIdRef.current, {
+        currentPosition: indexRef.current,
+        timeSpentSeconds: stats.timeSeconds,
+        averageWpm: stats.avgWpm,
+      })
+    } catch (err) {
+      console.warn('Auto-save failed:', err.message)
+    }
+  }, [isAuthenticated, getSessionStats])
+
+  // Start/stop autosave interval
+  useEffect(() => {
+    if (isPlaying && isAuthenticated && sessionId) {
+      autoSaveRef.current = setInterval(saveProgress, AUTOSAVE_INTERVAL_MS)
+    } else {
+      if (autoSaveRef.current) {
+        clearInterval(autoSaveRef.current)
+        autoSaveRef.current = null
+      }
+    }
+    return () => {
+      if (autoSaveRef.current) {
+        clearInterval(autoSaveRef.current)
+        autoSaveRef.current = null
+      }
+    }
+  }, [isPlaying, isAuthenticated, sessionId, saveProgress])
+
+  // Save on pause
+  useEffect(() => {
+    if (!isPlaying && sessionStartRef.current && isAuthenticated && sessionId) {
+      saveProgress()
+    }
+  }, [isPlaying, isAuthenticated, sessionId, saveProgress])
 
   const scheduleNext = useCallback(() => {
     clearTimer()
@@ -153,7 +207,7 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
         scheduleNext()
       }
     }, delay)
-  }, [clearTimer, totalWords, words, onDone])
+  }, [clearTimer, totalWords, words, onDone, getSessionStats])
 
   // Auto speed ramp
   const startRamp = useCallback(() => {
@@ -205,6 +259,7 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
   }, [isPlaying, scheduleNext, clearTimer, autoRamp, startRamp, stopRamp])
 
   const togglePlay = useCallback(() => {
+    if (showNoteInput) return // Don't toggle while note input is open
     if (currentIndex >= totalWords - 1) {
       setCurrentIndex(0)
       setWpm(RAMP_START_WPM)
@@ -214,7 +269,7 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
     } else {
       setIsPlaying(prev => !prev)
     }
-  }, [currentIndex, totalWords])
+  }, [currentIndex, totalWords, showNoteInput])
 
   const adjustSpeed = useCallback((delta) => {
     setAutoRamp(false)
@@ -252,9 +307,54 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
     }
   }, [chapters, currentChapter, goToChapter])
 
+  // ─── Mid-session note handling ─────────────────────
+  const openNoteInput = useCallback(() => {
+    setIsPlaying(false) // Pause while noting
+    setShowNoteInput(true)
+    setNoteText('')
+    setNoteSaved(false)
+    setTimeout(() => noteInputRef.current?.focus(), 100)
+  }, [])
+
+  const closeNoteInput = useCallback(() => {
+    setShowNoteInput(false)
+    setNoteText('')
+    setNoteSaved(false)
+  }, [])
+
+  const handleSaveNote = useCallback(async () => {
+    if (!noteText.trim()) return
+    if (!isAuthenticated || !user) return
+    if (!sessionId) return
+
+    try {
+      await createNote({
+        userId: user.id,
+        sessionId,
+        noteText: noteText.trim(),
+        wordPosition: currentIndex,
+      })
+      setNoteSaved(true)
+      setTimeout(() => {
+        closeNoteInput()
+      }, 800)
+    } catch (err) {
+      console.warn('Failed to save note:', err)
+    }
+  }, [noteText, isAuthenticated, user, sessionId, currentIndex, closeNoteInput])
+
   // Keyboard controls
   useEffect(() => {
     const handleKey = (e) => {
+      // If note input is open, only handle Escape
+      if (showNoteInput) {
+        if (e.code === 'Escape') {
+          e.preventDefault()
+          closeNoteInput()
+        }
+        return
+      }
+
       switch (e.code) {
         case 'Space':
           e.preventDefault()
@@ -280,11 +380,17 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
           e.preventDefault()
           onBack?.()
           break
+        case 'KeyN':
+          if (!e.metaKey && !e.ctrlKey) {
+            e.preventDefault()
+            openNoteInput()
+          }
+          break
       }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [togglePlay, adjustSpeed, skipBack, skipForward, onBack])
+  }, [togglePlay, adjustSpeed, skipBack, skipForward, onBack, showNoteInput, openNoteInput, closeNoteInput])
 
   // Restart scheduling when wpm changes during playback
   useEffect(() => {
@@ -313,195 +419,256 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
     )
   }
 
+  // Tap to play/pause on mobile (on the word area)
+  const handleWordAreaTap = useCallback(() => {
+    if (showNoteInput) return
+    togglePlay()
+  }, [togglePlay, showNoteInput])
+
+  // Swipe gestures for mobile
+  const touchStartRef = useRef(null)
+  const handleTouchStart = useCallback((e) => {
+    touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, time: Date.now() }
+  }, [])
+
+  const handleTouchEnd = useCallback((e) => {
+    if (!touchStartRef.current) return
+    const dx = e.changedTouches[0].clientX - touchStartRef.current.x
+    const dy = e.changedTouches[0].clientY - touchStartRef.current.y
+    const dt = Date.now() - touchStartRef.current.time
+    touchStartRef.current = null
+
+    if (dt > 500) return // ignore long touches
+    const absDx = Math.abs(dx)
+    const absDy = Math.abs(dy)
+
+    if (absDx > 60 && absDx > absDy) {
+      // Horizontal swipe
+      if (dx > 0) skipBack()
+      else skipForward()
+    } else if (absDy > 60 && absDy > absDx) {
+      // Vertical swipe — speed
+      if (dy < 0) adjustSpeed(50) // swipe up = faster
+      else adjustSpeed(-50)        // swipe down = slower
+    }
+  }, [skipBack, skipForward, adjustSpeed])
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 py-8 select-none animate-fade-in">
-      <div className="w-full max-w-2xl">
-
-        {/* Top bar: logo + back + WPM + theme */}
-        <div className="flex items-center justify-between mb-6 md:mb-8">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={onBack}
-              className="text-text-muted hover:text-white transition-colors cursor-pointer text-sm flex items-center gap-1.5"
-              title="Back (Esc)"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-              <span className="hidden sm:inline">Back</span>
-            </button>
-            <span className="text-text-muted/30 hidden sm:inline">|</span>
-            <span className="text-xs font-semibold text-text-muted/40 tracking-tight hidden sm:inline">Flowly</span>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Theme picker */}
-            <div className="relative">
-              <button
-                onClick={() => setShowThemePicker(prev => !prev)}
-                className="flex items-center gap-2 text-xs text-text-muted hover:text-white transition-colors cursor-pointer"
-              >
-                <span
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: orpColor }}
-                />
-                {ORP_THEMES[theme].name}
-              </button>
-
-              {showThemePicker && (
-                <div className="absolute top-8 right-0 bg-surface border border-border rounded-xl p-2 flex flex-col gap-1 z-10 min-w-[120px]">
-                  {Object.entries(ORP_THEMES).map(([key, t]) => (
-                    <button
-                      key={key}
-                      onClick={() => { setTheme(key); setShowThemePicker(false) }}
-                      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-colors cursor-pointer ${
-                        key === theme ? 'bg-border/50 text-white' : 'text-text-muted hover:text-white hover:bg-border/30'
-                      }`}
-                    >
-                      <span
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: t.color }}
-                      />
-                      {t.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* WPM display */}
-            <div className="text-sm text-text-muted flex items-center gap-2">
-              <span className="text-accent font-semibold">{wpm}</span> WPM
-              {autoRamp && rampElapsedRef.current < RAMP_DURATION_MS && (
-                <span className="text-[10px] text-accent/70 flex items-center gap-1 animate-pulse">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
-                    <polyline points="16 7 22 7 22 13" />
-                  </svg>
-                  ramping
-                </span>
-              )}
-            </div>
-          </div>
+    <div
+      className="fixed inset-0 bg-bg flex flex-col select-none animate-fade-in z-30"
+      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
+      {/* Top bar — minimal on mobile */}
+      <div className="flex items-center justify-between px-4 sm:px-6 pt-3 pb-2 shrink-0">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onBack}
+            className="text-text-muted hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
+            title="Back (Esc)"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            <span className="hidden sm:inline text-sm">Back</span>
+          </button>
+          <span className="text-text-muted/30 hidden sm:inline">|</span>
+          <span className="text-xs font-semibold text-text-muted/40 tracking-tight hidden sm:inline">Flowly</span>
         </div>
 
-        {/* Source info */}
-        {sourceInfo && (
-          <div className="text-center mb-2">
-            <p className="text-xs text-text-muted/50 truncate max-w-md mx-auto">{sourceInfo}</p>
-          </div>
-        )}
-
-        {/* Chapter navigation */}
-        {chapters && chapters.length >= 2 && (
-          <div className="flex items-center justify-center gap-3 mb-4">
+        <div className="flex items-center gap-3 sm:gap-4">
+          {/* Note button */}
+          {isAuthenticated && sessionId && (
             <button
-              onClick={prevChapter}
-              disabled={currentChapter === 0}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                currentChapter === 0 ? 'text-text-muted/20' : 'text-text-muted hover:text-white hover:bg-surface'
-              }`}
-              title="Previous chapter"
+              onClick={openNoteInput}
+              className="flex items-center gap-1.5 text-xs text-text-muted hover:text-accent transition-colors cursor-pointer"
+              title="Add note (N)"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+              <span className="hidden sm:inline">Note</span>
+            </button>
+          )}
+
+          {/* Theme dot */}
+          <div className="relative">
+            <button
+              onClick={() => setShowThemePicker(prev => !prev)}
+              className="flex items-center gap-1.5 text-xs text-text-muted hover:text-white transition-colors cursor-pointer"
+            >
+              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: orpColor }} />
+              <span className="hidden sm:inline">{ORP_THEMES[theme].name}</span>
+            </button>
+            {showThemePicker && (
+              <div className="absolute top-8 right-0 bg-surface border border-border rounded-xl p-2 flex flex-col gap-1 z-10 min-w-[120px]">
+                {Object.entries(ORP_THEMES).map(([key, t]) => (
+                  <button
+                    key={key}
+                    onClick={() => { setTheme(key); setShowThemePicker(false) }}
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-colors cursor-pointer ${
+                      key === theme ? 'bg-border/50 text-white' : 'text-text-muted hover:text-white hover:bg-border/30'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: t.color }} />
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* WPM */}
+          <div className="text-xs sm:text-sm text-text-muted flex items-center gap-1.5">
+            <span className="text-accent font-semibold">{wpm}</span>
+            <span className="hidden sm:inline">WPM</span>
+            {autoRamp && rampElapsedRef.current < RAMP_DURATION_MS && (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-accent/70 animate-pulse">
+                <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+                <polyline points="16 7 22 7 22 13" />
+              </svg>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Progress bar — thin at top like a reel */}
+      <div className="px-4 sm:px-6 shrink-0">
+        <div className="w-full h-0.5 bg-border/30 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-accent rounded-full transition-all duration-100 ease-linear"
+            style={{ width: `${Math.min(100, progress)}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Source + chapter info */}
+      <div className="text-center px-4 pt-2 shrink-0">
+        {sourceInfo && (
+          <p className="text-[10px] sm:text-xs text-text-muted/40 truncate">{sourceInfo}</p>
+        )}
+        {chapters && chapters.length >= 2 && (
+          <div className="flex items-center justify-center gap-2 mt-1">
+            <button onClick={prevChapter} disabled={currentChapter === 0}
+              className={`p-1 rounded transition-colors cursor-pointer ${currentChapter === 0 ? 'text-text-muted/20' : 'text-text-muted hover:text-white'}`}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 18 9 12 15 6" />
               </svg>
             </button>
-
             <div className="relative">
-              <button
-                onClick={() => setShowChapterList(prev => !prev)}
-                className="text-xs text-text-muted hover:text-white transition-colors cursor-pointer flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-surface"
-              >
+              <button onClick={() => setShowChapterList(prev => !prev)}
+                className="text-[10px] sm:text-xs text-text-muted hover:text-white transition-colors cursor-pointer flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-surface">
                 <span className="text-accent font-semibold">{currentChapter + 1}/{chapters.length}</span>
-                <span className="truncate max-w-[200px]">{chapters[currentChapter].title}</span>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
+                <span className="truncate max-w-[140px] sm:max-w-[200px]">{chapters[currentChapter].title}</span>
               </button>
-
               {showChapterList && (
-                <div className="absolute top-9 left-1/2 -translate-x-1/2 bg-surface border border-border rounded-xl p-2 z-20 min-w-[240px] max-w-[320px] max-h-[300px] overflow-y-auto">
+                <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-surface border border-border rounded-xl p-2 z-20 min-w-[220px] max-w-[300px] max-h-[250px] overflow-y-auto">
                   {chapters.map((ch, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => goToChapter(idx)}
-                      className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-colors cursor-pointer ${
+                    <button key={idx} onClick={() => goToChapter(idx)}
+                      className={`w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-colors cursor-pointer ${
                         idx === currentChapter ? 'bg-accent/15 text-white' : 'text-text-muted hover:text-white hover:bg-border/30'
-                      }`}
-                    >
-                      <span className="text-accent/70 font-mono text-[10px] w-5 shrink-0">{idx + 1}</span>
+                      }`}>
+                      <span className="text-accent/70 font-mono text-[10px] w-4 shrink-0">{idx + 1}</span>
                       <span className="truncate">{ch.title}</span>
                     </button>
                   ))}
                 </div>
               )}
             </div>
-
-            <button
-              onClick={nextChapter}
-              disabled={currentChapter === chapters.length - 1}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                currentChapter === chapters.length - 1 ? 'text-text-muted/20' : 'text-text-muted hover:text-white hover:bg-surface'
-              }`}
-              title="Next chapter"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <button onClick={nextChapter} disabled={currentChapter === chapters.length - 1}
+              className={`p-1 rounded transition-colors cursor-pointer ${currentChapter === chapters.length - 1 ? 'text-text-muted/20' : 'text-text-muted hover:text-white'}`}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="9 18 15 12 9 6" />
               </svg>
             </button>
           </div>
         )}
+      </div>
 
-        {/* Word display */}
-        <div className="h-[160px] sm:h-[200px] flex items-center justify-center relative">
-          {/* Focus guide lines */}
-          <div className="absolute left-1/2 -translate-x-1/2 top-2 w-0.5 h-6 rounded-full bg-accent/20" />
-          <div className="absolute left-1/2 -translate-x-1/2 bottom-2 w-0.5 h-6 rounded-full bg-accent/20" />
+      {/* ─── WORD DISPLAY — main reel area, fills remaining space ─── */}
+      <div
+        className="flex-1 flex items-center justify-center relative overflow-hidden"
+        onClick={handleWordAreaTap}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+      >
+        {/* Focus guide lines */}
+        <div className="absolute left-1/2 -translate-x-1/2 top-4 w-0.5 h-8 rounded-full bg-accent/15" />
+        <div className="absolute left-1/2 -translate-x-1/2 bottom-4 w-0.5 h-8 rounded-full bg-accent/15" />
 
-          <div
-            className={`font-semibold text-white tracking-wide transition-opacity duration-75 ${fadeClass} ${
-              isLongWord ? 'text-4xl sm:text-5xl md:text-7xl' : 'text-5xl sm:text-6xl md:text-8xl'
-            }`}
-            style={{ fontFamily: "'Inter', sans-serif" }}
-          >
-            {renderWord()}
-          </div>
+        <div
+          className={`font-semibold text-white tracking-wide transition-opacity duration-75 px-4 ${fadeClass} ${
+            isLongWord ? 'text-4xl sm:text-5xl md:text-7xl' : 'text-5xl sm:text-6xl md:text-8xl'
+          }`}
+          style={{ fontFamily: "'Inter', sans-serif" }}
+        >
+          {renderWord()}
         </div>
 
-        {/* Controls */}
-        <div className="flex items-center justify-center gap-2 sm:gap-3 mt-4 sm:mt-6">
-          {/* Skip back */}
-          <button
-            onClick={skipBack}
-            className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border border-border bg-surface flex items-center justify-center text-text-muted hover:text-white hover:border-accent/50 transition-all cursor-pointer"
-            title="Back 10 words (←)"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="11 17 6 12 11 7" />
-              <polyline points="18 17 13 12 18 7" />
+        {/* Tap hint on mobile when paused */}
+        {!isPlaying && !showNoteInput && (
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 sm:hidden text-[10px] text-text-muted/30 animate-pulse">
+            Tap to play · Swipe to navigate
+          </div>
+        )}
+      </div>
+
+      {/* Mid-session note input — overlay at bottom */}
+      {showNoteInput && (
+        <div className="px-4 sm:px-6 pb-2 animate-fade-in shrink-0">
+          <div className="bg-surface border border-accent/30 rounded-xl p-4 max-w-lg mx-auto">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-accent font-semibold flex items-center gap-1.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                  <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                </svg>
+                Quick Note
+              </span>
+              <button onClick={closeNoteInput} className="text-text-muted hover:text-white transition-colors cursor-pointer">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <textarea ref={noteInputRef} value={noteText} onChange={(e) => setNoteText(e.target.value)}
+              placeholder="Capture a thought..." rows={2}
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-white placeholder-text-muted/40 resize-none focus:outline-none focus:border-accent/50 transition-colors"
+              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleSaveNote() } }}
+            />
+            <div className="flex items-center justify-end mt-2">
+              <button onClick={handleSaveNote} disabled={!noteText.trim()}
+                className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  noteSaved ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                  : noteText.trim() ? 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
+                  : 'bg-surface text-text-muted/30 border border-border cursor-not-allowed'
+                }`}>{noteSaved ? '✓ Saved' : 'Save'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom controls */}
+      <div className="shrink-0 px-4 sm:px-6 pb-4 pt-2">
+        <div className="flex items-center justify-center gap-2.5 sm:gap-3 max-w-lg mx-auto">
+          <button onClick={skipBack}
+            className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border border-border/60 bg-surface/80 flex items-center justify-center text-text-muted hover:text-white hover:border-accent/50 transition-all cursor-pointer active:scale-90"
+            title="Back 10 words">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="11 17 6 12 11 7" /><polyline points="18 17 13 12 18 7" />
             </svg>
           </button>
 
-          {/* Speed down */}
-          <button
-            onClick={() => adjustSpeed(-50)}
-            className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border border-border bg-surface flex items-center justify-center text-text-muted hover:text-white hover:border-accent/50 transition-all cursor-pointer text-lg font-bold"
-            title="-50 WPM (↓)"
-          >
-            −
-          </button>
+          <button onClick={() => adjustSpeed(-50)}
+            className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border border-border/60 bg-surface/80 flex items-center justify-center text-text-muted hover:text-white hover:border-accent/50 transition-all cursor-pointer active:scale-90 text-base font-bold"
+            title="-50 WPM">−</button>
 
-          {/* Play/Pause */}
-          <button
-            onClick={togglePlay}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-accent flex items-center justify-center text-white hover:bg-accent-hover transition-all cursor-pointer active:scale-95"
-            title="Play/Pause (Space)"
-          >
+          <button onClick={togglePlay}
+            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-accent flex items-center justify-center text-white hover:bg-accent-hover transition-all cursor-pointer active:scale-90"
+            title="Play/Pause">
             {isPlaying ? (
               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="4" width="4" height="16" rx="1" />
-                <rect x="14" y="4" width="4" height="16" rx="1" />
+                <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
               </svg>
             ) : (
               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
@@ -510,48 +677,34 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
             )}
           </button>
 
-          {/* Speed up */}
-          <button
-            onClick={() => adjustSpeed(50)}
-            className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border border-border bg-surface flex items-center justify-center text-text-muted hover:text-white hover:border-accent/50 transition-all cursor-pointer text-lg font-bold"
-            title="+50 WPM (↑)"
-          >
-            +
-          </button>
+          <button onClick={() => adjustSpeed(50)}
+            className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border border-border/60 bg-surface/80 flex items-center justify-center text-text-muted hover:text-white hover:border-accent/50 transition-all cursor-pointer active:scale-90 text-base font-bold"
+            title="+50 WPM">+</button>
 
-          {/* Skip forward */}
-          <button
-            onClick={skipForward}
-            className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border border-border bg-surface flex items-center justify-center text-text-muted hover:text-white hover:border-accent/50 transition-all cursor-pointer"
-            title="Forward 10 words (→)"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="13 17 18 12 13 7" />
-              <polyline points="6 17 11 12 6 7" />
+          <button onClick={skipForward}
+            className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border border-border/60 bg-surface/80 flex items-center justify-center text-text-muted hover:text-white hover:border-accent/50 transition-all cursor-pointer active:scale-90"
+            title="Forward 10 words">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="13 17 18 12 13 7" /><polyline points="6 17 11 12 6 7" />
             </svg>
           </button>
         </div>
 
-        {/* Progress bar */}
-        <div className="mt-6 sm:mt-8">
-          <div className="w-full h-1 bg-border/50 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-accent rounded-full transition-all duration-100 ease-linear"
-              style={{ width: `${Math.min(100, progress)}%` }}
-            />
-          </div>
-          <div className="flex items-center justify-between mt-2.5 text-xs text-text-muted">
-            <span>{currentIndex + 1} / {totalWords} words</span>
-            <span>{wordsRemaining > 0 ? `${minutesLeft} min left` : 'Done'}</span>
-          </div>
+        {/* Stats + time remaining */}
+        <div className="flex items-center justify-between mt-2.5 text-[10px] sm:text-xs text-text-muted/50 max-w-lg mx-auto">
+          <span>{currentIndex + 1} / {totalWords}</span>
+          <span>{wordsRemaining > 0 ? `${minutesLeft} min left` : 'Done'}</span>
         </div>
 
-        {/* Keyboard hints — hidden on mobile */}
-        <div className="hidden sm:flex items-center justify-center gap-4 mt-8 text-[10px] text-text-muted/30">
-          <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/50">Space</kbd> play</span>
-          <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/50">↑↓</kbd> speed</span>
-          <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/50">←→</kbd> skip</span>
-          <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/50">Esc</kbd> exit</span>
+        {/* Keyboard hints — desktop only */}
+        <div className="hidden sm:flex items-center justify-center gap-4 mt-4 text-[10px] text-text-muted/25">
+          <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/40">Space</kbd> play</span>
+          <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/40">↑↓</kbd> speed</span>
+          <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/40">←→</kbd> skip</span>
+          {isAuthenticated && sessionId && (
+            <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/40">N</kbd> note</span>
+          )}
+          <span><kbd className="px-1 py-0.5 rounded bg-surface border border-border text-text-muted/40">Esc</kbd> exit</span>
         </div>
       </div>
     </div>
