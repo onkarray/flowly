@@ -32,40 +32,6 @@ export function AuthProvider({ children }) {
     if (error) throw error
   }
 
-  // Sign up with email & password (sends confirmation email)
-  const signUpWithEmail = async (email, password) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: window.location.origin,
-      },
-    })
-    if (error) throw error
-    return data
-  }
-
-  // Sign in with email & password
-  const signInWithEmail = async (email, password) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
-    if (error) throw error
-    return data
-  }
-
-  // Send magic link (passwordless OTP via email)
-  const signInWithMagicLink = async (email) => {
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: window.location.origin,
-      },
-    })
-    if (error) throw error
-  }
-
   const signOut = async () => {
     const { error } = await supabase.auth.signOut()
     if (error) throw error
@@ -85,9 +51,6 @@ export function AuthProvider({ children }) {
     user,
     loading,
     signInWithGoogle,
-    signUpWithEmail,
-    signInWithEmail,
-    signInWithMagicLink,
     signOut,
     onSignOut,
     isAuthenticated: !!user,
