@@ -24,8 +24,28 @@ function App() {
   const { user, isAuthenticated, onSignOut } = useAuth()
   const showToast = useToast()
   const [screen, setScreen] = useState(() => isAuthenticated ? 'app' : 'landing')
+  const [words, setWords] = useState([])
+  const [chapters, setChapters] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [loadingProgress, setLoadingProgress] = useState(0)
+  const [error, setError] = useState('')
+  const [fileInfo, setFileInfo] = useState('')
+  const [sessionStats, setSessionStats] = useState(null)
 
-  // Redirect to landing page on sign out, and to app on sign in
+  // Session tracking
+  const [currentSessionId, setCurrentSessionId] = useState(null)
+  const [contentText, setContentText] = useState('')
+  const [sourceType, setSourceType] = useState('sample')
+  const [sourceUrl, setSourceUrl] = useState(null)
+  const [resumePosition, setResumePosition] = useState(0)
+
+  // Login modal
+  const [showLoginModal, setShowLoginModal] = useState(false)
+  const [loginMessage, setLoginMessage] = useState('')
+
+  const audio = useAudio()
+
+  // Redirect to landing page on sign out
   useEffect(() => {
     const unsubscribe = onSignOut(() => {
       setScreen('landing')
@@ -49,26 +69,6 @@ function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated])
-  const [words, setWords] = useState([])
-  const [chapters, setChapters] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [loadingProgress, setLoadingProgress] = useState(0)
-  const [error, setError] = useState('')
-  const [fileInfo, setFileInfo] = useState('')
-  const [sessionStats, setSessionStats] = useState(null)
-
-  // Session tracking
-  const [currentSessionId, setCurrentSessionId] = useState(null)
-  const [contentText, setContentText] = useState('')
-  const [sourceType, setSourceType] = useState('sample')
-  const [sourceUrl, setSourceUrl] = useState(null)
-  const [resumePosition, setResumePosition] = useState(0)
-
-  // Login modal
-  const [showLoginModal, setShowLoginModal] = useState(false)
-  const [loginMessage, setLoginMessage] = useState('')
-
-  const audio = useAudio()
 
   const handleRequestLogin = (message) => {
     setLoginMessage(message || '')

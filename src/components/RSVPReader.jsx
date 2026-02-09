@@ -101,7 +101,9 @@ export default function RSVPReader({ words, chapters, onChapterChange, sourceInf
     if (playStartRef.current) totalMs += Date.now() - playStartRef.current
     const totalSeconds = Math.max(1, totalMs / 1000)
     const readableWords = wordsReadRef.current
-    const avgWpm = Math.round((readableWords / totalSeconds) * 60)
+    // Calculate average WPM with sanity bounds (50-2000 WPM)
+    const rawWpm = Math.round((readableWords / totalSeconds) * 60)
+    const avgWpm = readableWords < 3 ? 0 : Math.min(2000, Math.max(0, rawWpm))
     return {
       wordsRead: readableWords,
       timeSeconds: Math.round(totalSeconds),

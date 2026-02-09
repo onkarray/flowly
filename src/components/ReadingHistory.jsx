@@ -45,7 +45,7 @@ function computeStats(sessions) {
     if (age < monthMs) monthWords += words
     totalTime += s.time_spent_seconds || 0
 
-    if (s.average_wpm && s.average_wpm > 0) {
+    if (s.average_wpm && s.average_wpm > 0 && s.average_wpm <= 2000) {
       totalWpm += s.average_wpm
       wpmCount++
     }

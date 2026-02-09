@@ -2,16 +2,15 @@ import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function LoginModal({ onClose, message }) {
-  const { signInWithGoogle, signUpWithEmail, signInWithEmail, signInWithMagicLink, verifyOtp } = useAuth()
+  const { signInWithGoogle, signUpWithEmail, signInWithEmail, signInWithMagicLink } = useAuth()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  // 'google' | 'login' | 'signup' | 'magic' | 'verify-otp' | 'verify-signup'
+  // 'google' | 'login' | 'signup' | 'magic' | 'check-email'
   const [mode, setMode] = useState('google')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [otpCode, setOtpCode] = useState('')
 
   const resetState = () => {
     setError('')
@@ -49,12 +48,10 @@ export default function LoginModal({ onClose, message }) {
     setError('')
     try {
       const data = await signUpWithEmail(email.trim(), password)
-      // If user is returned but not confirmed, show OTP verification
       if (data?.user && !data.user.confirmed_at) {
-        setSuccess('Check your email! Enter the 6-digit code we sent to verify your account.')
-        setMode('verify-signup')
+        setSuccess('Check your email and click the confirmation link to activate your account.')
+        setMode('check-email')
       } else {
-        // Auto-confirmed (shouldn't happen with email confirmation enabled)
         onClose()
       }
     } catch (err) {
@@ -77,7 +74,7 @@ export default function LoginModal({ onClose, message }) {
       onClose()
     } catch (err) {
       if (err.message?.includes('Email not confirmed')) {
-        setError('Please verify your email first. Check your inbox for a verification link.')
+        setError('Please verify your email first. Check your inbox for a confirmation link.')
       } else if (err.message?.includes('Invalid login credentials')) {
         setError('Invalid email or password. Try again or sign up.')
       } else {
@@ -98,46 +95,10 @@ export default function LoginModal({ onClose, message }) {
     setError('')
     try {
       await signInWithMagicLink(email.trim())
-      setSuccess('Magic link sent! Check your email and click the link to sign in. You can also enter the 6-digit code below.')
-      setMode('verify-otp')
+      setSuccess('Magic link sent! Check your email and click the link to sign in.')
+      setMode('check-email')
     } catch (err) {
       setError(err.message || 'Failed to send magic link. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleVerifyOtp = async (e) => {
-    e.preventDefault()
-    if (!otpCode.trim() || otpCode.trim().length !== 6) {
-      setError('Please enter the 6-digit code.')
-      return
-    }
-    setLoading(true)
-    setError('')
-    try {
-      await verifyOtp(email.trim(), otpCode.trim())
-      onClose()
-    } catch (err) {
-      setError(err.message || 'Invalid code. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleVerifySignup = async (e) => {
-    e.preventDefault()
-    if (!otpCode.trim() || otpCode.trim().length !== 6) {
-      setError('Please enter the 6-digit code.')
-      return
-    }
-    setLoading(true)
-    setError('')
-    try {
-      await verifyOtp(email.trim(), otpCode.trim())
-      onClose()
-    } catch (err) {
-      setError(err.message || 'Invalid code. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -176,17 +137,17 @@ export default function LoginModal({ onClose, message }) {
           </div>
           <h2 className="text-lg font-semibold text-white mb-1">
             {mode === 'signup' ? 'Create an account' :
-             mode === 'verify-otp' || mode === 'verify-signup' ? 'Verify your email' :
+             mode === 'check-email' ? 'Check your email' :
              mode === 'magic' ? 'Sign in with magic link' :
              message || 'Sign in to continue'}
           </h2>
-          <p className="text-text-muted text-sm">
-            {mode === 'signup' ? 'Join Flowly to save your progress' :
-             mode === 'verify-otp' ? 'Enter the code from your email or click the magic link' :
-             mode === 'verify-signup' ? 'Enter the 6-digit code sent to your email' :
-             mode === 'magic' ? "We'll send a sign-in link to your email" :
-             'Save your notes, track progress, and build your reading list'}
-          </p>
+          {mode !== 'check-email' && (
+            <p className="text-text-muted text-sm">
+              {mode === 'signup' ? 'Join Flowly to save your progress' :
+               mode === 'magic' ? "We'll send a sign-in link to your email" :
+               'Save your notes, track progress, and build your reading list'}
+            </p>
+          )}
         </div>
 
         {/* ─── Main view: Google + Email options ─── */}
@@ -381,88 +342,43 @@ export default function LoginModal({ onClose, message }) {
           </form>
         )}
 
-        {/* ─── Verify OTP (magic link) ─── */}
-        {mode === 'verify-otp' && (
-          <form onSubmit={handleVerifyOtp}>
+        {/* ─── Check Email confirmation ─── */}
+        {mode === 'check-email' && (
+          <div className="text-center">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-accent/10 flex items-center justify-center">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+              </svg>
+            </div>
+
             {success && (
-              <div className="mb-4 p-3 rounded-xl bg-green-500/10 border border-green-500/20">
-                <p className="text-green-400 text-xs">{success}</p>
-              </div>
+              <p className="text-green-400 text-sm mb-4">{success}</p>
             )}
 
-            <p className="text-text-muted text-xs mb-3">
+            <p className="text-text-muted text-xs mb-1">
               Sent to <span className="text-white font-medium">{email}</span>
             </p>
-
-            <input
-              type="text"
-              placeholder="Enter 6-digit code"
-              value={otpCode}
-              onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              autoFocus
-              maxLength={6}
-              inputMode="numeric"
-              className="w-full px-4 py-3 rounded-xl bg-bg border border-border text-white text-sm text-center tracking-[0.3em] font-mono placeholder:text-text-muted/50 placeholder:tracking-normal focus:outline-none focus:border-accent/50 transition-colors mb-4"
-            />
-
-            <button
-              type="submit"
-              disabled={loading || otpCode.length !== 6}
-              className="w-full py-3 rounded-xl bg-accent text-white text-sm font-semibold hover:bg-accent-hover active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {loading ? 'Verifying...' : 'Verify & Sign In'}
-            </button>
+            <p className="text-text-muted/60 text-xs mb-6">
+              Click the link in your email to continue. You can close this modal.
+            </p>
 
             <button
               type="button"
-              onClick={() => switchMode('magic')}
-              className="w-full mt-4 text-xs text-text-muted hover:text-white transition-colors cursor-pointer text-center"
+              onClick={onClose}
+              className="w-full py-3 rounded-xl bg-border/30 text-white text-sm font-medium hover:bg-border/50 transition-all cursor-pointer"
             >
-              Resend code
-            </button>
-          </form>
-        )}
-
-        {/* ─── Verify OTP (signup confirmation) ─── */}
-        {mode === 'verify-signup' && (
-          <form onSubmit={handleVerifySignup}>
-            {success && (
-              <div className="mb-4 p-3 rounded-xl bg-green-500/10 border border-green-500/20">
-                <p className="text-green-400 text-xs">{success}</p>
-              </div>
-            )}
-
-            <p className="text-text-muted text-xs mb-3">
-              Sent to <span className="text-white font-medium">{email}</span>
-            </p>
-
-            <input
-              type="text"
-              placeholder="Enter 6-digit code"
-              value={otpCode}
-              onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              autoFocus
-              maxLength={6}
-              inputMode="numeric"
-              className="w-full px-4 py-3 rounded-xl bg-bg border border-border text-white text-sm text-center tracking-[0.3em] font-mono placeholder:text-text-muted/50 placeholder:tracking-normal focus:outline-none focus:border-accent/50 transition-colors mb-4"
-            />
-
-            <button
-              type="submit"
-              disabled={loading || otpCode.length !== 6}
-              className="w-full py-3 rounded-xl bg-accent text-white text-sm font-semibold hover:bg-accent-hover active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {loading ? 'Verifying...' : 'Verify & Continue'}
+              Got it
             </button>
 
             <button
               type="button"
               onClick={() => switchMode('google')}
-              className="w-full mt-4 text-xs text-text-muted hover:text-white transition-colors cursor-pointer text-center"
+              className="w-full mt-3 text-xs text-text-muted hover:text-white transition-colors cursor-pointer text-center"
             >
               ← Back to all options
             </button>
-          </form>
+          </div>
         )}
 
         {/* Error */}
