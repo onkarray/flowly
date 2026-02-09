@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useAuth } from './contexts/AuthContext'
 import LandingPage, { DEMO_TEXT } from './components/LandingPage'
 import AppDashboard from './components/AppDashboard'
@@ -21,9 +21,34 @@ import { createSession, completeSession, syncOfflineQueue, getSession } from './
 import { saveItem, detectSourceType } from './lib/savedItems'
 
 function App() {
-  const { user, isAuthenticated } = useAuth()
+  const { user, isAuthenticated, onSignOut } = useAuth()
   const showToast = useToast()
   const [screen, setScreen] = useState(() => isAuthenticated ? 'app' : 'landing')
+
+  // Redirect to landing page on sign out, and to app on sign in
+  useEffect(() => {
+    const unsubscribe = onSignOut(() => {
+      setScreen('landing')
+      setWords([])
+      setChapters(null)
+      setError('')
+      setFileInfo('')
+      setSessionStats(null)
+      setCurrentSessionId(null)
+      setResumePosition(0)
+      setShowLoginModal(false)
+    })
+    return unsubscribe
+  }, [onSignOut])
+
+  // When user signs in (from any method), go to app dashboard
+  useEffect(() => {
+    if (isAuthenticated && screen === 'landing') {
+      setScreen('app')
+      syncOfflineQueue().catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated])
   const [words, setWords] = useState([])
   const [chapters, setChapters] = useState(null)
   const [loading, setLoading] = useState(false)
